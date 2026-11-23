@@ -126,7 +126,7 @@ namespace Files.App.Utils.Storage
 				{
 					var failedSources = copyResult.Items.Where(x => CopyEngineResult.Convert(x.HResult) == FileSystemStatusCode.InUse);
 					var filePath = failedSources.Select(x => x.HResult == CopyEngineResult.COPYENGINE_E_SHARING_VIOLATION_DEST ? x.Destination : x.Source).WhereNotNull();
-					var lockingProcess = WhoIsLocking(filePath);
+					var lockingProcess = await WhoIsLockingAsync(filePath);
 
 					switch (await GetFileInUseDialog(filePath, lockingProcess))
 					{
@@ -427,29 +427,33 @@ namespace Files.App.Utils.Storage
 				{
 					var failedSources = deleteResult.Items.Where(x => CopyEngineResult.Convert(x.HResult) == FileSystemStatusCode.InUse);
 
-					var filesToCheck = new List<string>();
-					foreach (var failedSource in failedSources)
+					// Listing a large folder can take a long time, so keep it off the UI thread
+					var filePath = await Task.Run(() =>
 					{
-						if (failedSource.Source is not { } failedPath)
-							continue;
-
-						if (Directory.Exists(failedPath))
+						var filesToCheck = new List<string>();
+						foreach (var failedSource in failedSources)
 						{
-							try
+							if (failedSource.Source is not { } failedPath)
+								continue;
+
+							if (Directory.Exists(failedPath))
 							{
-								var files = Directory.EnumerateFiles(failedPath, "*", SearchOption.AllDirectories);
-								filesToCheck.AddRange(files);
+								try
+								{
+									var files = Directory.EnumerateFiles(failedPath, "*", SearchOption.AllDirectories);
+									filesToCheck.AddRange(files);
+								}
+								catch { }
 							}
-							catch { }
+							else if (File.Exists(failedPath))
+							{
+								filesToCheck.Add(failedPath);
+							}
 						}
-						else if (File.Exists(failedPath))
-						{
-							filesToCheck.Add(failedPath);
-						}
-					}
 
-					var filePath = filesToCheck.Any() ? filesToCheck : failedSources.Select(x => x.Source).WhereNotNull();
-					var lockingProcess = WhoIsLocking(filePath);
+						return filesToCheck.Any() ? filesToCheck : failedSources.Select(x => x.Source).WhereNotNull().ToList();
+					});
+					var lockingProcess = await WhoIsLockingAsync(filePath);
 
 					switch (await GetFileInUseDialog(filePath, lockingProcess))
 					{
@@ -583,7 +587,7 @@ namespace Files.App.Utils.Storage
 				{
 					var failedSources = moveResult.Items.Where(x => CopyEngineResult.Convert(x.HResult) == FileSystemStatusCode.InUse);
 					var filePath = failedSources.Select(x => x.HResult == CopyEngineResult.COPYENGINE_E_SHARING_VIOLATION_DEST ? x.Destination : x.Source).WhereNotNull();
-					var lockingProcess = WhoIsLocking(filePath);
+					var lockingProcess = await WhoIsLockingAsync(filePath);
 
 					switch (await GetFileInUseDialog(filePath, lockingProcess))
 					{
@@ -715,7 +719,7 @@ namespace Files.App.Utils.Storage
 				{
 					var failedSources = renameResult.Items.Where(x => CopyEngineResult.Convert(x.HResult) == FileSystemStatusCode.InUse);
 					var filePath = failedSources.Select(x => x.HResult == CopyEngineResult.COPYENGINE_E_SHARING_VIOLATION_DEST ? x.Destination : x.Source).WhereNotNull();
-					var lockingProcess = WhoIsLocking(filePath);
+					var lockingProcess = await WhoIsLockingAsync(filePath);
 
 					switch (await GetFileInUseDialog(filePath, lockingProcess))
 					{
@@ -822,7 +826,7 @@ namespace Files.App.Utils.Storage
 				{
 					var failedSources = moveResult.Items.Where(x => CopyEngineResult.Convert(x.HResult) == FileSystemStatusCode.InUse);
 					var filePath = failedSources.Select(x => x.HResult == CopyEngineResult.COPYENGINE_E_SHARING_VIOLATION_DEST ? x.Destination : x.Source).WhereNotNull();
-					var lockingProcess = WhoIsLocking(filePath);
+					var lockingProcess = await WhoIsLockingAsync(filePath);
 
 					switch (await GetFileInUseDialog(filePath, lockingProcess))
 					{
@@ -922,9 +926,12 @@ namespace Files.App.Utils.Storage
 			return await dialogService.ShowDialogAsync(dialogViewModel);
 		}
 
-		private IEnumerable<Win32Process> WhoIsLocking(IEnumerable<string> filesToCheck)
+		private static Task<IEnumerable<Win32Process>> WhoIsLockingAsync(IEnumerable<string> filesToCheck)
 		{
-			return FileOperationsHelpers.CheckFileInUse(filesToCheck.ToArray()) ?? [];
+			var files = filesToCheck.ToArray();
+
+			// Restart Manager can take minutes for many files, so keep it off the UI thread
+			return Task.Run<IEnumerable<Win32Process>>(() => FileOperationsHelpers.CheckFileInUse(files) ?? []);
 		}
 
 		private static IEnumerable<(ShellOperationItemResult Result, string Source, string Destination)> GetSuccessfulResults(IEnumerable<ShellOperationItemResult> results)
